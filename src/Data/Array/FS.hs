@@ -1,6 +1,13 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Data.Array.FS where
+module Data.Array.FS
+    ( Array
+    , new
+    , read
+
+      -- * Binary interface
+    , readBinary
+    ) where
 
 import Control.Concurrent
 import Control.Exception
@@ -48,7 +55,7 @@ new file offset read_size chunks read_fn = do
               (openFile file ReadMode)
               hClose
               1 -- stripes
-              (fromIntegral (30 :: Int)) -- close handles in 30 seconds
+              (fromIntegral (30 :: Int)) -- close unused handles in 30 seconds
               8 -- at most 8 handles
 
     return Array
@@ -87,8 +94,8 @@ read n arr@(Array lru_var _ chunk_size _ _) = do
           -- TODO error handling
           _ <- forkIO $
             catch (loadChunk chunk_n chunk_var arr)
-                  (\(_ :: SomeException) ->
-                      putMVar chunk_var (error "Chunk loading failed"))
+                  (\(e :: SomeException) ->
+                      putMVar chunk_var (error ("Chunk loading failed: " ++ show e)))
 
           return (LRU.insert chunk_n chunk_var lru, chunk_var)
 
@@ -97,10 +104,10 @@ read n arr@(Array lru_var _ chunk_size _ _) = do
 
 loadChunk :: Word -> MVar (A.Array Word a) -> Array a -> IO ()
 loadChunk chunk_n chunk_ref (Array _ offset chunk_size handles read_fn) = do
-    let chunk_offset = offset (chunk_n * chunk_size)
     withResource handles $ \h -> do
-      let offsets = map offset [chunk_offset .. chunk_offset*chunk_size - 1]
-      as <- forM offsets $ \o -> do
-              hSeek h AbsoluteSeek (fromIntegral o)
+      as <- forM [0 .. chunk_size - 1] $ \chunk_idx -> do
+              let seek = offset (chunk_n*chunk_size + chunk_idx)
+              hSeek h AbsoluteSeek (fromIntegral seek)
               read_fn h
-      putMVar chunk_ref (A.array (0, chunk_size-1) (zip [0..] as))
+      let !arr = A.array (0, chunk_size-1) (zip [0..] as)
+      putMVar chunk_ref arr
